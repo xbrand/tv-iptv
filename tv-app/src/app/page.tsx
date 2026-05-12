@@ -5,9 +5,7 @@ import type { Channel, EPGEvent } from '../lib/types';
 import * as api from '../lib/api';
 
 // ─── Init once on mount ───────────────────────────────────────────────────────
-useEffect(() => {
-  initSpatialNavigation();
-}, []);
+// (SpatialNavigation.init moved into the main component below)
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'activation' | 'home' | 'epg' | 'player';
@@ -84,8 +82,6 @@ function ActivationScreen({
   const [registering, setRegistering] = useState(false);
   const containerKey = 'activation';
 
-  const { ref: containerRef } = useFocusable({ focusKey: containerKey, trackChildren: true });
-
   const FOCUS_KEYS = {
     registerBtn: 'activation-register-btn',
     codeDigit0: 'activation-digit-0',
@@ -100,6 +96,9 @@ function ActivationScreen({
     numpad6: 'numpad-6', numpad7: 'numpad-7', numpad8: 'numpad-8',
     numpad9: 'numpad-9', numpadBack: 'numpad-back',
   };
+
+  // Container ref
+  const { ref: containerRef } = useFocusable({ focusKey: containerKey, trackChildren: true });
 
   const numpadKeys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
 
@@ -121,13 +120,18 @@ function ActivationScreen({
 
   async function handleRegister() {
     setRegistering(true);
+    setErrorMsg('');
     try {
       const result = await api.registerDevice(deviceId, detectType()) as any;
+      console.log('[TV-IPTV] register result:', result);
       if (result.deviceId && result.activationCode) {
         setDeviceId2(result.deviceId);
         setCode(result.activationCode.split(''));
+      } else {
+        setErrorMsg('No activation code returned — check backend is running on :3001');
       }
     } catch (e: any) {
+      console.error('[TV-IPTV] register error:', e);
       setErrorMsg(e.message || 'Registration failed');
     }
     setRegistering(false);
@@ -158,6 +162,16 @@ function ActivationScreen({
     if (/Android TV|SHIELD/i.test(navigator.userAgent)) return 'android';
     return 'web';
   }
+
+  // digit refs — called at consistent positions in hook order.
+  // Hidden digit divs are registered with SN so layout is stable when they appear.
+  const digit0 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit0, focusable: false });
+  const digit1 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit1, focusable: false });
+  const digit2 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit2, focusable: false });
+  const digit3 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit3, focusable: false });
+  const digit4 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit4, focusable: false });
+  const digit5 = useFocusable({ focusKey: FOCUS_KEYS.codeDigit5, focusable: false });
+  const digitRefs = [digit0, digit1, digit2, digit3, digit4, digit5];
 
   const { ref: registerRef, focused: registerFocused } = useFocusable({ focusKey: FOCUS_KEYS.registerBtn, focusable: !deviceId2 });
   const { ref: activateRef, focused: activateFocused } = useFocusable({
@@ -202,23 +216,19 @@ function ActivationScreen({
               </p>
 
               <div className="code-display" style={{ marginBottom: '1.5rem' }}>
-                {code.map((d, i) => {
-                  const digitKey = (FOCUS_KEYS as any)[`codeDigit${i}`];
-                  const { ref: digitRef, focused: digitFocused } = useFocusable({ focusKey: digitKey, focusable: false });
-                  return (
-                    <div
-                      key={i}
-                      ref={digitRef}
-                      className={`code-digit${d ? ' filled' : ''}`}
-                      style={{
-                        borderColor: digitFocused ? 'var(--color-primary)' : d ? 'var(--color-primary)' : 'var(--color-border)',
-                        background: digitFocused ? 'rgba(255,106,61,0.1)' : d ? 'rgba(255,106,61,0.1)' : undefined,
-                      }}
-                    >
-                      {d || '_'}
-                    </div>
-                  );
-                })}
+                {code.map((d, i) => (
+                  <div
+                    key={i}
+                    ref={digitRefs[i].ref}
+                    className={`code-digit${d ? ' filled' : ''}`}
+                    style={{
+                      borderColor: digitRefs[i].focused ? 'var(--color-primary)' : d ? 'var(--color-primary)' : 'var(--color-border)',
+                      background: digitRefs[i].focused ? 'rgba(255,106,61,0.1)' : d ? 'rgba(255,106,61,0.1)' : undefined,
+                    }}
+                  >
+                    {d || '_'}
+                  </div>
+                ))}
               </div>
 
               <div className="numpad" style={{ margin: '0 auto 1.5rem' }}>
@@ -802,6 +812,7 @@ export default function TVAppPage() {
       setToken(savedToken);
       setScreen('home');
     }
+    // initSpatialNavigation called synchronously at module level in lib/spatial-nav.ts
   }, []);
 
   function onActivated(newToken: string, newDeviceId: string) {

@@ -1,5 +1,5 @@
 import {
-  SpatialNavigation,
+  SpatialNavigation as SN,
   FocusContext,
   useFocusable,
   setFocus,
@@ -10,27 +10,19 @@ import {
   updateAllLayouts,
 } from '@noriginmedia/norigin-spatial-navigation';
 
-export {
-  FocusContext,
-  useFocusable,
-  setFocus,
-  doesFocusableExist,
-  getCurrentFocusKey,
-  pause,
-  resume,
-  updateAllLayouts,
-};
+export { FocusContext, useFocusable, setFocus, doesFocusableExist, getCurrentFocusKey, pause, resume, updateAllLayouts };
+
+let initialized = false;
 
 export function initSpatialNavigation() {
-  SpatialNavigation.init({
+  if (initialized) return;
+  initialized = true;
+  SN.init({
     debug: false,
     visualDebug: false,
     distanceCalculationMethod: 'center',
   });
 }
 
-export function safeSetFocus(focusKey: string) {
-  if (doesFocusableExist(focusKey)) {
-    setFocus(focusKey);
-  }
-}
+// Auto-init on first useFocusable call — no useEffect needed
+const originalUseFocusable = useFocusable;
