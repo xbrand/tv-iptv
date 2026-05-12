@@ -5,6 +5,7 @@ import devicesRouter from './routes/devices.js';
 import locationsRouter from './routes/locations.js';
 import m3uRouter from './routes/m3u.js';
 import marvinRouter from './routes/marvin.js';
+import authRouter from './routes/auth.js';
 
 export const prisma = new PrismaClient();
 
@@ -16,6 +17,7 @@ app.use('/api/devices', devicesRouter);
 app.use('/api/locations', locationsRouter);
 app.use('/api/m3u', m3uRouter);
 app.use('/api/marvin', marvinRouter);
+app.use('/api/auth', authRouter);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 

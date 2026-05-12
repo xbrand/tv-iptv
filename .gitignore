@@ -28,3 +28,6 @@ npm-debug.log*
 .idea/
 *.swp
 *.swo
+# Agent pipeline
+.agent-team/
+backend/.agent-team/

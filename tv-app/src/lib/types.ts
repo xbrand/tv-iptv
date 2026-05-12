@@ -20,6 +20,7 @@ export interface Channel {
   number?: string;
   category?: string;
   currentProgram?: ProgramInfo;
+  url?: string;
 }
 
 export interface ProgramInfo {
@@ -35,7 +36,7 @@ export interface EPGEvent {
   channelId: string;
   title: string;
   description?: string;
-  startTime: string;  // ISO8601
+  startTime: string;
   endTime: string;
   catchup?: boolean;
 }
@@ -53,4 +54,16 @@ export interface DRMConfig {
   type: 'widevine' | 'fairplay' | 'none';
   licenseAcquisitionURL?: string;
   certificateURL?: string;
+}
+
+// App State
+export type Screen = 'login' | 'player' | 'config' | 'epg';
+
+export interface AppState {
+  screen: Screen;
+  token: string | null;
+  deviceId: string | null;
+  channels: Channel[];
+  favorites: string[];
+  currentChannel: Channel | null;
 }
