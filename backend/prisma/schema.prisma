@@ -1,0 +1,48 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Device {
+  id             String    @id @default(cuid())
+  uniqueId       String    @unique
+  deviceType     String    // webos | tizen | android
+  name           String?
+  activationCode String?   // 6-digit code
+  isActivated    Boolean   @default(false)
+  activatedAt    DateTime?
+  locationId     String?
+  location       Location? @relation(fields: [locationId], references: [id])
+  token          String?   // JWT after activation
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Location {
+  id           String    @id @default(cuid())
+  name         String
+  address      String?
+  code         String    @unique // Human-readable code for M3U lookup
+  ipRangeStart String?   // IP range start for geo-matching
+  ipRangeEnd   String?
+  m3uUrl       String?   // External M3U URL to proxy
+  m3uContent   String?   // Inline M3U content
+  defaultM3U   Boolean   @default(false)
+  devices      Device[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model ServiceConfig {
+  id             String   @id @default(cuid())
+  name           String
+  marvinUrl      String
+  marvinUsername String?
+  marvinPassword String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+}

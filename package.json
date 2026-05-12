@@ -1,0 +1,21 @@
+{
+  "name": "tv-iptv",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=backend\" \"npm run dev --workspace=tv-app\"",
+    "build": "npm run build --workspace=tv-app",
+    "install:all": "npm install && npm install --workspace=tv-app && npm install --workspace=backend",
+    "db:push": "npm run db:push --workspace=backend",
+    "db:seed": "npm run db:seed --workspace=backend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:tv": "npm run dev --workspace=tv-app"
+  },
+  "workspaces": [
+    "tv-app",
+    "backend"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

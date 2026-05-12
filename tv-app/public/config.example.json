@@ -1,0 +1,7 @@
+{
+  "apiBaseUrl": "http://localhost:3001",
+  "marvinServiceUrl": "https://marvin.bcms-cdn.prod.aws.kpn.com",
+  "appId": "tv-iptv",
+  "enableDRM": true,
+  "defaultCountry": "NL"
+}
