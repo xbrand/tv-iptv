@@ -1,9 +1,13 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useTVRemote } from '../hooks/useTVRemote';
-import { useNativePlayer } from '../hooks/useNativePlayer';
+import { useState, useEffect, useRef } from 'react';
+import { initSpatialNavigation, FocusContext, useFocusable, setFocus } from '../lib/spatial-nav';
 import type { Channel, EPGEvent } from '../lib/types';
 import * as api from '../lib/api';
+
+// ─── Init once on mount ───────────────────────────────────────────────────────
+useEffect(() => {
+  initSpatialNavigation();
+}, []);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'activation' | 'home' | 'epg' | 'player';
@@ -22,11 +26,50 @@ function formatDeviceId(id: string): string {
   return id.replace(/(.{4})/g, '$1-').replace(/-$/, '').toUpperCase();
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+// ─── NumpadKey ───────────────────────────────────────────────────────────────
+function NumpadKey({
+  value,
+  onPress,
+  wide,
+  action,
+  focusKey,
+}: {
+  value: string;
+  onPress: () => void;
+  wide?: boolean;
+  action?: boolean;
+  focusKey: string;
+}) {
+  const { ref, focused } = useFocusable({ focusKey });
+  return (
+    <div
+      ref={ref}
+      onClick={onPress}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: 64,
+        background: action ? 'var(--color-primary)' : 'var(--color-surface-2)',
+        border: `2px solid ${focused ? 'var(--color-primary)' : 'var(--color-border)'}`,
+        borderRadius: 10,
+        fontSize: value === '⌫' ? '1.25rem' : '1.5rem',
+        fontWeight: 600,
+        color: action ? '#fff' : 'var(--color-text)',
+        cursor: 'pointer',
+        gridColumn: wide ? 'span 2' : undefined,
+        transform: focused ? 'scale(1.04)' : 'scale(1)',
+        boxShadow: focused ? '0 0 0 3px rgba(255,106,61,0.35), 0 0 20px rgba(255,106,61,0.2)' : 'none',
+        transition: 'transform 150ms ease, border-color 150ms, box-shadow 150ms',
+        userSelect: 'none',
+      }}
+    >
+      {value}
+    </div>
+  );
 }
 
-// ─── Activation Screen ────────────────────────────────────────────────────────
+// ─── ActivationScreen ────────────────────────────────────────────────────────
 function ActivationScreen({
   deviceId,
   onActivated,
@@ -39,30 +82,56 @@ function ActivationScreen({
   const [errorMsg, setErrorMsg] = useState('');
   const [deviceId2, setDeviceId2] = useState('');
   const [registering, setRegistering] = useState(false);
-  const focusIndex = code.indexOf('');
+  const containerKey = 'activation';
 
-  useTVRemote({
-    onDigit(d) {
-      if (focusIndex === -1) return;
+  const { ref: containerRef } = useFocusable({ focusKey: containerKey, trackChildren: true });
+
+  const FOCUS_KEYS = {
+    registerBtn: 'activation-register-btn',
+    codeDigit0: 'activation-digit-0',
+    codeDigit1: 'activation-digit-1',
+    codeDigit2: 'activation-digit-2',
+    codeDigit3: 'activation-digit-3',
+    codeDigit4: 'activation-digit-4',
+    codeDigit5: 'activation-digit-5',
+    activateBtn: 'activation-activate-btn',
+    numpad0: 'numpad-0', numpad1: 'numpad-1', numpad2: 'numpad-2',
+    numpad3: 'numpad-3', numpad4: 'numpad-4', numpad5: 'numpad-5',
+    numpad6: 'numpad-6', numpad7: 'numpad-7', numpad8: 'numpad-8',
+    numpad9: 'numpad-9', numpadBack: 'numpad-back',
+  };
+
+  const numpadKeys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
+
+  function appendDigit(d: string) {
+    const next = [...code];
+    const empty = next.indexOf('');
+    if (empty !== -1) { next[empty] = d; setCode(next); }
+  }
+
+  function backspace() {
+    const lastFilled = [...code].reverse().findIndex(c => c !== '');
+    if (lastFilled >= 0) {
+      const idx = 5 - lastFilled;
       const next = [...code];
-      next[focusIndex] = d;
+      next[idx] = '';
       setCode(next);
-    },
-    onBack() {
-      const lastFilled = [...code].reverse().findIndex(c => c !== '');
-      if (lastFilled >= 0) {
-        const idx = 5 - lastFilled;
-        const next = [...code];
-        next[idx] = '';
-        setCode(next);
+    }
+  }
+
+  async function handleRegister() {
+    setRegistering(true);
+    try {
+      const result = await api.registerDevice(deviceId, detectType()) as any;
+      if (result.deviceId && result.activationCode) {
+        setDeviceId2(result.deviceId);
+        setCode(result.activationCode.split(''));
       }
-    },
-    onEnter() {
-      if (code.every(c => c !== '') && deviceId2) {
-        handleActivate();
-      }
-    },
-  });
+    } catch (e: any) {
+      setErrorMsg(e.message || 'Registration failed');
+    }
+    setRegistering(false);
+  }
 
   async function handleActivate() {
     setStatus('loading');
@@ -83,142 +152,192 @@ function ActivationScreen({
     }
   }
 
-  async function handleRegister() {
-    setRegistering(true);
-    try {
-      const result = await api.registerDevice(deviceId, detectType()) as any;
-      if (result.deviceId && result.activationCode) {
-        setDeviceId2(result.deviceId);
-        setCode(result.activationCode.split(''));
-      }
-    } catch (e: any) {
-      setErrorMsg(e.message || 'Registration failed');
-    }
-    setRegistering(false);
-  }
-
   function detectType(): string {
-    if ('webOS' in window) return 'webos';
-    if ('tizen' in window) return 'tizen';
+    if ('webOS' in (window as any)) return 'webos';
+    if ('tizen' in (window as any)) return 'tizen';
     if (/Android TV|SHIELD/i.test(navigator.userAgent)) return 'android';
     return 'web';
   }
 
+  const { ref: registerRef, focused: registerFocused } = useFocusable({ focusKey: FOCUS_KEYS.registerBtn, focusable: !deviceId2 });
+  const { ref: activateRef, focused: activateFocused } = useFocusable({
+    focusKey: FOCUS_KEYS.activateBtn,
+    focusable: !!(deviceId2 && code.every(c => c !== '')),
+  });
+
   return (
-    <div className="activation-screen">
-      <div className="activation-logo">TV-IPTV</div>
+    <FocusContext.Provider value={containerKey}>
+      <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '2rem' }}>
+        <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--color-primary)' }}>TV-IPTV</div>
 
-      <div className="card" style={{ textAlign: 'center', minWidth: 400 }}>
-        <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginBottom: '1rem' }}>
-          Device ID
-        </p>
-        <p style={{ fontFamily: 'monospace', fontSize: '1.1rem', letterSpacing: '0.1em', marginBottom: '1.5rem', color: 'var(--color-text)' }}>
-          {formatDeviceId(deviceId)}
-        </p>
+        <div className="card" style={{ textAlign: 'center', minWidth: 400 }}>
+          <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginBottom: '0.5rem' }}>Device ID</p>
+          <p style={{ fontFamily: 'monospace', fontSize: '1.1rem', letterSpacing: '0.1em', marginBottom: '1.5rem' }}>
+            {formatDeviceId(deviceId)}
+          </p>
 
-        {!deviceId2 ? (
-          <>
-            <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)', marginBottom: '1rem' }}>
-              Enter the 6-digit activation code from the portal
-            </p>
-            <button
-              className="btn btn-primary"
-              onClick={handleRegister}
-              disabled={registering}
-            >
-              {registering ? 'Registering...' : 'Get Activation Code'}
-            </button>
-          </>
-        ) : (
-          <>
-            <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)', marginBottom: '0.75rem' }}>
-              Your code
-            </p>
-            <div className="code-display" style={{ marginBottom: '1.5rem' }}>
-              {code.map((d, i) => (
-                <div key={i} className={`code-digit${d ? ' filled' : ''}`}>{d || '_'}</div>
-              ))}
-            </div>
+          {!deviceId2 ? (
+            <>
+              <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)', marginBottom: '1rem' }}>
+                Enter the 6-digit activation code from the portal
+              </p>
+              <button
+                ref={registerRef}
+                className="btn btn-primary"
+                onClick={handleRegister}
+                disabled={registering}
+                style={{
+                  transform: registerFocused ? 'scale(1.04)' : 'scale(1)',
+                  boxShadow: registerFocused ? '0 0 0 3px rgba(255,106,61,0.35), 0 0 20px rgba(255,106,61,0.2)' : 'none',
+                  transition: 'transform 150ms, box-shadow 150ms',
+                }}
+              >
+                {registering ? 'Registering...' : 'Get Activation Code'}
+              </button>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)', marginBottom: '0.75rem' }}>
+                Your code
+              </p>
 
-            <div className="numpad" style={{ margin: '0 auto 1.5rem' }}>
-              {['1','2','3','4','5','6','7','8','9','','0','⌫'].map((k, i) => (
-                k === '' ? <div key={i} /> :
-                k === '⌫' ? (
-                  <button key={i} className="numpad-key action" onClick={() => {
-                    const lastFilled = [...code].reverse().findIndex(c => c !== '');
-                    if (lastFilled >= 0) {
-                      const idx = 5 - lastFilled;
-                      const next = [...code];
-                      next[idx] = '';
-                      setCode(next);
-                    }
-                  }}>⌫</button>
-                ) : (
-                  <button key={i} className="numpad-key" onClick={() => {
-                    const next = [...code];
-                    const empty = next.indexOf('');
-                    if (empty !== -1) { next[empty] = k; setCode(next); }
-                  }}>{k}</button>
-                )
-              ))}
-            </div>
-
-            {status === 'error' && (
-              <div className="callout callout-danger" style={{ marginBottom: '1rem', justifyContent: 'center' }}>
-                {errorMsg}
+              <div className="code-display" style={{ marginBottom: '1.5rem' }}>
+                {code.map((d, i) => {
+                  const digitKey = (FOCUS_KEYS as any)[`codeDigit${i}`];
+                  const { ref: digitRef, focused: digitFocused } = useFocusable({ focusKey: digitKey, focusable: false });
+                  return (
+                    <div
+                      key={i}
+                      ref={digitRef}
+                      className={`code-digit${d ? ' filled' : ''}`}
+                      style={{
+                        borderColor: digitFocused ? 'var(--color-primary)' : d ? 'var(--color-primary)' : 'var(--color-border)',
+                        background: digitFocused ? 'rgba(255,106,61,0.1)' : d ? 'rgba(255,106,61,0.1)' : undefined,
+                      }}
+                    >
+                      {d || '_'}
+                    </div>
+                  );
+                })}
               </div>
-            )}
 
-            <button
-              className="btn btn-primary"
-              onClick={handleActivate}
-              disabled={status === 'loading' || code.some(c => c === '')}
-              style={{ width: '100%' }}
-            >
-              {status === 'loading' ? 'Activating...' : 'Activate'}
-            </button>
-          </>
-        )}
+              <div className="numpad" style={{ margin: '0 auto 1.5rem' }}>
+                {numpadKeys.map((k, i) => {
+                  if (k === '') return <div key={i} />;
+                  const fk = k === '⌫' ? FOCUS_KEYS.numpadBack : (FOCUS_KEYS as any)[`numpad${k}`];
+                  return (
+                    <NumpadKey
+                      key={i}
+                      value={k}
+                      focusKey={fk}
+                      action={k === '⌫'}
+                      wide={k === '⌫'}
+                      onPress={() => k === '⌫' ? backspace() : appendDigit(k)}
+                    />
+                  );
+                })}
+              </div>
+
+              {status === 'error' && (
+                <div className="callout callout-danger" style={{ marginBottom: '1rem', justifyContent: 'center' }}>
+                  {errorMsg}
+                </div>
+              )}
+
+              <button
+                ref={activateRef}
+                className="btn btn-primary"
+                onClick={handleActivate}
+                disabled={status === 'loading' || code.some(c => c === '')}
+                style={{
+                  width: '100%',
+                  transform: activateFocused ? 'scale(1.04)' : 'scale(1)',
+                  boxShadow: activateFocused ? '0 0 0 3px rgba(255,106,61,0.35), 0 0 20px rgba(255,106,61,0.2)' : 'none',
+                  transition: 'transform 150ms, box-shadow 150ms',
+                }}
+              >
+                {status === 'loading' ? 'Activating...' : 'Activate'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </FocusContext.Provider>
   );
 }
 
-// ─── Channel Card ────────────────────────────────────────────────────────────
+// ─── ChannelCard ─────────────────────────────────────────────────────────────
 function ChannelCard({
   channel,
-  focused,
-  selected,
+  focusKey,
   onSelect,
 }: {
   channel: Channel;
-  focused: boolean;
-  selected: boolean;
+  focusKey: string;
   onSelect: () => void;
 }) {
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: onSelect,
+  });
+
   return (
     <div
-      className={`channel-card${selected ? ' selected' : ''}${focused ? ' focus-ring' : ''}`}
+      ref={ref}
       onClick={onSelect}
-      style={focused ? { transform: 'scale(1.04)', zIndex: 1 } : {}}
-      tabIndex={-1}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '0.5rem',
+        padding: '1rem 0.75rem',
+        background: focused ? 'rgba(255,106,61,0.08)' : 'var(--color-surface)',
+        border: `2px solid ${focused ? 'var(--color-primary)' : 'transparent'}`,
+        borderRadius: 16,
+        cursor: 'pointer',
+        transform: focused ? 'scale(1.04)' : 'scale(1)',
+        boxShadow: focused ? '0 0 0 3px rgba(255,106,61,0.35), 0 0 20px rgba(255,106,61,0.2)' : 'none',
+        transition: 'transform 150ms ease, border-color 150ms, box-shadow 150ms, background 150ms',
+        minHeight: 100,
+        minWidth: 100,
+        position: 'relative',
+      }}
     >
       {channel.logo ? (
-        <img src={channel.logo} alt={channel.name} className="channel-logo" />
+        <img src={channel.logo} alt={channel.name} style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 6, background: 'var(--color-surface-2)', padding: 4 }} />
       ) : (
-        <div className="channel-logo" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-primary)' }}>
+        <div style={{ width: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-primary)', background: 'var(--color-surface-2)', borderRadius: 6 }}>
           {channel.name.charAt(0)}
         </div>
       )}
-      <span className="channel-name">{channel.name}</span>
+      <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--color-text-secondary)', textAlign: 'center', lineHeight: 1.3, maxWidth: 90, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+        {channel.name}
+      </span>
       {channel.currentProgram && (
-        <span className="current-program">{channel.currentProgram.title}</span>
+        <span style={{ fontSize: '0.625rem', color: 'var(--color-text-muted)', textAlign: 'center', maxWidth: 90, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          {channel.currentProgram.title}
+        </span>
       )}
     </div>
   );
 }
 
-// ─── Home Screen ─────────────────────────────────────────────────────────────
+// ─── HomeScreen ─────────────────────────────────────────────────────────────
+const DEMO_CHANNELS: Channel[] = [
+  { id: 'ch1', name: 'BBC One', category: 'News', logo: 'https://upload.wikimedia.org/wikipedia/commons/1/14/BBC_Old_Logo.png' },
+  { id: 'ch2', name: 'CNN', category: 'News', logo: 'https://upload.wikimedia.org/wikipedia/commons/c/c3/CNN_logo_Accepted_2016.png' },
+  { id: 'ch3', name: 'Sky Sports', category: 'Sports', logo: 'https://upload.wikimedia.org/wikipedia/commons/b/b8/Sky_Sports_logo_2017.svg' },
+  { id: 'ch4', name: 'Eurosport', category: 'Sports', logo: 'https://upload.wikimedia.org/wikipedia/commons/3/38/Eurosport_Logo.svg' },
+  { id: 'ch5', name: 'HBO', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/1/17/HBO_logo_2021.svg' },
+  { id: 'ch6', name: 'Netflix', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/0/08/Netflix_2015_logo.svg' },
+  { id: 'ch7', name: 'National Geographic', category: 'Documentary', logo: 'https://upload.wikimedia.org/wikipedia/commons/f/fc/Natgeologo.svg' },
+  { id: 'ch8', name: 'Discovery', category: 'Documentary', logo: 'https://upload.wikimedia.org/wikipedia/commons/4/4a/Discovery_Channel_Logo.svg' },
+  { id: 'ch9', name: 'BBC Two', category: 'News', logo: 'https://upload.wikimedia.org/wikipedia/commons/2/2f/BBC_Two_logo_2019.svg' },
+  { id: 'ch10', name: 'ITV', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/f/f8/ITV_logo_2019.svg' },
+  { id: 'ch11', name: 'Channel 4', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/0/08/Channel_4_logo_2016.svg' },
+  { id: 'ch12', name: 'Five', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/2/20/Channel_5_logo_2016.svg' },
+];
+
 function HomeScreen({
   token,
   onPlay,
@@ -228,76 +347,61 @@ function HomeScreen({
   onPlay: (channel: Channel) => void;
   onOpenEPG: () => void;
 }) {
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [filtered, setFiltered] = useState<Channel[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [channels, setChannels] = useState<Channel[]>(DEMO_CHANNELS);
+  const [filtered, setFiltered] = useState<Channel[]>(DEMO_CHANNELS);
+  const [categories, setCategories] = useState<string[]>(['All', 'Favorites', 'News', 'Sports', 'Entertainment', 'Documentary']);
   const [activeCategory, setActiveCategory] = useState('All');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [focusedIndex, setFocusedIndex] = useState(0);
 
-  // Grid navigation state
   const COLS = 4;
-  const gridRef = useRef<HTMLDivElement>(null);
+  const homeKey = 'home';
 
   useEffect(() => {
     const stored = localStorage.getItem('tv_favorites');
     if (stored) setFavorites(new Set(JSON.parse(stored)));
-  }, []);
-
-  useEffect(() => {
     loadChannels();
   }, []);
 
   async function loadChannels() {
     setLoading(true);
     try {
-      // Fetch M3U for the device
       const deviceId2 = localStorage.getItem('tv_device_id2') || '';
       const m3uText = await api.getM3UDevice(deviceId2);
       const parsed = parseM3U(m3uText);
-      setChannels(parsed);
-      setFiltered(parsed);
-
-      const cats = ['All', 'Favorites', ...new Set(parsed.map(c => c.category || 'Other'))];
-      setCategories(cats);
-    } catch (e) {
-      console.error('Failed to load channels:', e);
-      // Demo channels if no backend
-      setChannels(DEMO_CHANNELS);
-      setFiltered(DEMO_CHANNELS);
-      setCategories(['All', 'Favorites', 'News', 'Sports', 'Entertainment']);
-    }
+      if (parsed.length > 0) {
+        setChannels(parsed);
+        setFiltered(parsed);
+        const cats = ['All', 'Favorites', ...new Set(parsed.map(c => c.category || 'Other'))];
+        setCategories(cats);
+      }
+    } catch { /* fall back to demo channels */ }
     setLoading(false);
   }
 
   function parseM3U(text: string): Channel[] {
     const lines = text.split('\n');
-    const channels: Channel[] = [];
+    const chs: Channel[] = [];
     let current: Partial<Channel> = {};
-
     for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed.startsWith('#EXTINF:')) {
-        const attrs = trimmed.slice('#EXTINF:'.length);
-        const nameMatch = attrs.match(/tvg-name="([^"]*)"/);
-        const logoMatch = attrs.match(/tvg-logo="([^"]*)"/);
-        const groupMatch = attrs.match(/group-title="([^"]*)"/);
-        const numMatch = attrs.match(/tvg-chnum="([^"]*)"/);
+        const nameMatch = trimmed.match(/tvg-name="([^"]*)"/);
+        const logoMatch = trimmed.match(/tvg-logo="([^"]*)"/);
+        const groupMatch = trimmed.match(/group-title="([^"]*)"/);
         current = {
-          id: nameMatch?.[1] || `ch-${channels.length + 1}`,
-          name: nameMatch?.[1] || `Channel ${channels.length + 1}`,
+          id: nameMatch?.[1] || `ch-${chs.length + 1}`,
+          name: nameMatch?.[1] || `Channel ${chs.length + 1}`,
           logo: logoMatch?.[1],
           category: groupMatch?.[1],
-          number: numMatch?.[1],
         };
       } else if (trimmed && !trimmed.startsWith('#')) {
-        current.id = current.id || `ch-${channels.length + 1}`;
-        channels.push(current as Channel);
+        current.id = current.id || `ch-${chs.length + 1}`;
+        chs.push(current as Channel);
         current = {};
       }
     }
-    return channels;
+    return chs;
   }
 
   function filterChannels(cat: string) {
@@ -305,7 +409,6 @@ function HomeScreen({
     if (cat === 'All') setFiltered(channels);
     else if (cat === 'Favorites') setFiltered(channels.filter(c => favorites.has(c.id)));
     else setFiltered(channels.filter(c => c.category === cat));
-    setFocusedIndex(0);
   }
 
   function toggleFavorite(id: string) {
@@ -318,120 +421,103 @@ function HomeScreen({
     });
   }
 
-  const cols = COLS;
-  const rows = Math.ceil(filtered.length / cols);
-
-  useTVRemote({
-    onArrowUp() {
-      if (focusedIndex >= cols) setFocusedIndex(i => i - cols);
-    },
-    onArrowDown() {
-      if (focusedIndex + cols < filtered.length) setFocusedIndex(i => i + cols);
-    },
-    onArrowLeft() {
-      if (focusedIndex % cols > 0) setFocusedIndex(i => i - 1);
-    },
-    onArrowRight() {
-      if (focusedIndex % cols < cols - 1 && focusedIndex + 1 < filtered.length) setFocusedIndex(i => i + 1);
-    },
-    onEnter() {
-      const ch = filtered[focusedIndex];
-      if (ch) onPlay(ch);
-    },
-    onChannelUp() {
-      if (focusedIndex >= cols) setFocusedIndex(i => i - cols);
-      else setFocusedIndex(0);
-    },
-    onChannelDown() {
-      if (focusedIndex + cols < filtered.length) setFocusedIndex(i => i + cols);
-    },
-    onDigit(d) {
-      // Quick channel select: jump to channel number
-      const num = parseInt(d);
-      if (num >= 0 && num < filtered.length) {
-        setFocusedIndex(num);
-        onPlay(filtered[num]);
-      }
-    },
-    onInfo() {
-      const ch = filtered[focusedIndex];
-      if (ch) toggleFavorite(ch.id);
-    },
-  });
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-        <div className="spinner" />
-      </div>
-    );
-  }
+  const { ref: homeRef } = useFocusable({ focusKey: homeKey, trackChildren: true });
+  const { ref: epgBtnRef, focused: epgBtnFocused } = useFocusable({ focusKey: 'home-epg-btn', onEnterPress: onOpenEPG });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', height: '100%' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-primary)' }}>TV-IPTV</div>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <button className="btn btn-surface" onClick={onOpenEPG} style={{ fontSize: '0.875rem', padding: '0.5rem 1rem', minHeight: 44 }}>
+    <FocusContext.Provider value={homeKey}>
+      <div ref={homeRef} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', height: '100%' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-primary)' }}>TV-IPTV</div>
+          <button
+            ref={epgBtnRef}
+            onClick={onOpenEPG}
+            style={{
+              background: epgBtnFocused ? 'var(--color-surface-3)' : 'var(--color-surface-2)',
+              border: `1px solid ${epgBtnFocused ? 'var(--color-primary)' : 'var(--color-border)'}`,
+              borderRadius: 10,
+              padding: '0.5rem 1rem',
+              color: 'var(--color-text)',
+              fontSize: '0.875rem',
+              cursor: 'pointer',
+              transform: epgBtnFocused ? 'scale(1.04)' : 'scale(1)',
+              boxShadow: epgBtnFocused ? '0 0 0 3px rgba(255,106,61,0.35)' : 'none',
+              transition: 'all 150ms',
+            }}
+          >
             📺 Guide
           </button>
         </div>
-      </div>
 
-      {/* Category filter */}
-      <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
-        {categories.map(cat => (
-          <button
-            key={cat}
-            className={`category-chip${activeCategory === cat ? ' active' : ''}`}
-            onClick={() => filterChannels(cat)}
-          >
-            {cat}
-          </button>
-        ))}
-      </div>
+        {/* Category filter */}
+        <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
+          {categories.map(cat => {
+            const catKey = `home-cat-${cat}`;
+            const { ref: catRef, focused: catFocused } = useFocusable({ focusKey: catKey });
+            return (
+              <div
+                key={cat}
+                ref={catRef}
+                onClick={() => filterChannels(cat)}
+                style={{
+                  padding: '0.375rem 0.875rem',
+                  borderRadius: 999,
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
+                  background: catFocused ? 'rgba(255,106,61,0.15)' : activeCategory === cat ? 'rgba(255,106,61,0.15)' : 'var(--color-surface-2)',
+                  border: `1px solid ${catFocused ? 'var(--color-primary)' : activeCategory === cat ? 'var(--color-primary)' : 'transparent'}`,
+                  color: catFocused ? 'var(--color-primary)' : activeCategory === cat ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  transform: catFocused ? 'scale(1.04)' : 'scale(1)',
+                  boxShadow: catFocused ? '0 0 0 3px rgba(255,106,61,0.25)' : 'none',
+                  transition: 'all 150ms',
+                }}
+              >
+                {cat}
+              </div>
+            );
+          })}
+        </div>
 
-      {/* Channel grid */}
-      <div
-        ref={gridRef}
-        style={{
+        {/* Channel grid */}
+        <div style={{
           display: 'grid',
-          gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          gridTemplateColumns: `repeat(${COLS}, 1fr)`,
           gap: '0.75rem',
           flex: 1,
           overflowY: 'auto',
           paddingBottom: '1rem',
-        }}
-      >
-        {filtered.map((ch, i) => (
-          <ChannelCard
-            key={ch.id}
-            channel={ch}
-            focused={i === focusedIndex}
-            selected={favorites.has(ch.id)}
-            onSelect={() => { setFocusedIndex(i); onPlay(ch); }}
-          />
-        ))}
-        {filtered.length === 0 && (
-          <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '3rem', color: 'var(--color-text-muted)' }}>
-            No channels in this category
-          </div>
-        )}
-      </div>
+        }}>
+          {filtered.map((ch, i) => (
+            <ChannelCard
+              key={ch.id}
+              channel={ch}
+              focusKey={`home-channel-${i}`}
+              onSelect={() => onPlay(ch)}
+            />
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '3rem', color: 'var(--color-text-muted)' }}>
+              No channels in this category
+            </div>
+          )}
+        </div>
 
-      {/* Footer hint */}
-      <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.75rem', color: 'var(--color-text-muted)', padding: '0.5rem 0' }}>
-        <span>↑↓←→ Navigate</span>
-        <span>OK Play</span>
-        <span>Info ★ Favorite</span>
-        <span>Guide EPG</span>
+        {/* Footer hint */}
+        <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.75rem', color: 'var(--color-text-muted)', padding: '0.5rem 0' }}>
+          <span>↑↓←→ Navigate</span>
+          <span>OK Play</span>
+          <span>Info ★ Favorite</span>
+          <span>Guide EPG</span>
+        </div>
       </div>
-    </div>
+    </FocusContext.Provider>
   );
 }
 
-// ─── EPG Screen ──────────────────────────────────────────────────────────────
+// ─── EPGScreen ──────────────────────────────────────────────────────────────
 function EPGScreen({
   channels,
   token,
@@ -445,12 +531,15 @@ function EPGScreen({
 }) {
   const [epgEvents, setEpgEvents] = useState<EPGEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [focusedRow, setFocusedRow] = useState(0);
-  const [timeOffset, setTimeOffset] = useState(0); // 30-min increments
+  const [timeOffset, setTimeOffset] = useState(0);
   const now = new Date();
   const baseTime = new Date(now.getTime() + timeOffset * 30 * 60 * 1000);
   const viewStart = new Date(baseTime);
   viewStart.setMinutes(0, 0, 0);
+
+  const epgKey = 'epg';
+  const { ref: epgRef } = useFocusable({ focusKey: epgKey, trackChildren: true });
+  const { ref: backBtnRef, focused: backBtnFocused } = useFocusable({ focusKey: 'epg-back-btn', onEnterPress: onBack });
 
   useEffect(() => { loadEPG(); }, [timeOffset]);
 
@@ -461,34 +550,10 @@ function EPGScreen({
         from: viewStart.toISOString(),
         to: new Date(viewStart.getTime() + 3 * 60 * 60 * 1000).toISOString(),
       }) as any;
-      if (data.events) setEpgEvents(data.events);
-      else if (data.epg) setEpgEvents(data.epg);
-      else setEpgEvents([]);
-    } catch {
-      setEpgEvents([]);
-    }
+      setEpgEvents(data.events || data.epg || []);
+    } catch { setEpgEvents([]); }
     setLoading(false);
   }
-
-  useTVRemote({
-    onArrowUp() {
-      if (focusedRow > 0) setFocusedRow(r => r - 1);
-    },
-    onArrowDown() {
-      if (focusedRow < channels.length - 1) setFocusedRow(r => r + 1);
-    },
-    onArrowLeft() {
-      setTimeOffset(o => o - 1);
-    },
-    onArrowRight() {
-      setTimeOffset(o => o + 1);
-    },
-    onEnter() {
-      const ch = channels[focusedRow];
-      if (ch) onPlay(ch);
-    },
-    onBack,
-  });
 
   function formatColTime(offset: number): string {
     const t = new Date(viewStart.getTime() + offset * 30 * 60 * 1000);
@@ -499,94 +564,116 @@ function EPGScreen({
   const timeSlots = Array.from({ length: COLS }, (_, i) => i);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '1rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>TV Guide</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <button className="btn btn-ghost" onClick={() => setTimeOffset(o => o - 1)}>◀</button>
-          <span style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', minWidth: 120, textAlign: 'center' }}>
-            {viewStart.toLocaleDateString()} {formatColTime(0)}
-          </span>
-          <button className="btn btn-ghost" onClick={() => setTimeOffset(o => o + 1)}>▶</button>
-          <button className="btn btn-surface" onClick={onBack} style={{ marginLeft: '0.5rem', fontSize: '0.875rem' }}>← Back</button>
-        </div>
-      </div>
-
-      {loading ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-          <div className="spinner" />
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem', flex: 1, overflow: 'hidden' }}>
-          {/* Time header */}
-          <div style={{ display: 'grid', gridTemplateColumns: `160px repeat(${COLS}, 1fr)`, gap: '0.375rem' }}>
-            <div />
-            {timeSlots.map(i => (
-              <div key={i} style={{ textAlign: 'center', fontSize: '0.6875rem', color: 'var(--color-text-muted)', padding: '0.25rem 0' }}>
-                {formatColTime(i)}
-              </div>
-            ))}
+    <FocusContext.Provider value={epgKey}>
+      <div ref={epgRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>TV Guide</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button
+              ref={backBtnRef}
+              onClick={onBack}
+              style={{
+                background: backBtnFocused ? 'var(--color-surface-3)' : 'var(--color-surface-2)',
+                border: `1px solid ${backBtnFocused ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                borderRadius: 10,
+                padding: '0.25rem 0.75rem',
+                color: 'var(--color-text)',
+                fontSize: '0.875rem',
+                cursor: 'pointer',
+                transform: backBtnFocused ? 'scale(1.04)' : 'scale(1)',
+                boxShadow: backBtnFocused ? '0 0 0 3px rgba(255,106,61,0.35)' : 'none',
+                transition: 'all 150ms',
+              }}
+            >
+              ← Back
+            </button>
           </div>
+        </div>
 
-          {/* Channel rows */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem', flex: 1, overflowY: 'auto' }}>
-            {channels.slice(0, 12).map((ch, rowIdx) => (
-              <div
-                key={ch.id}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: `160px repeat(${COLS}, 1fr)`,
-                  gap: '0.375rem',
-                  background: rowIdx === focusedRow ? 'rgba(255,106,61,0.08)' : 'transparent',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '0.25rem 0.5rem',
-                  border: rowIdx === focusedRow ? '2px solid var(--color-primary)' : '2px solid transparent',
-                  transition: 'background 150ms, border-color 150ms',
-                  alignItems: 'center',
-                }}
-              >
-                <div style={{ fontSize: '0.75rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {ch.name}
+        {loading ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
+            <div className="spinner" />
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem', flex: 1, overflow: 'hidden' }}>
+            {/* Time header */}
+            <div style={{ display: 'grid', gridTemplateColumns: `160px repeat(${COLS}, 1fr)`, gap: '0.375rem' }}>
+              <div />
+              {timeSlots.map(i => (
+                <div key={i} style={{ textAlign: 'center', fontSize: '0.6875rem', color: 'var(--color-text-muted)', padding: '0.25rem 0' }}>
+                  {formatColTime(i)}
                 </div>
-                {timeSlots.map(slot => {
-                  const ev = epgEvents.find(e =>
-                    e.channelId === ch.id &&
-                    new Date(e.startTime) <= new Date(viewStart.getTime() + (slot + 0.5) * 30 * 60 * 1000) &&
-                    new Date(e.endTime) > new Date(viewStart.getTime() + slot * 30 * 60 * 1000)
-                  );
-                  return (
-                    <div
-                      key={slot}
-                      style={{
-                        height: 40,
-                        background: ev ? 'var(--color-surface-2)' : 'var(--color-surface)',
-                        borderRadius: 4,
-                        display: 'flex',
-                        alignItems: 'center',
-                        padding: '0 0.375rem',
-                        fontSize: '0.625rem',
-                        overflow: 'hidden',
-                        whiteSpace: 'nowrap',
-                        textOverflow: 'ellipsis',
-                        cursor: 'pointer',
-                        border: ev?.catchup ? '1px solid var(--color-accent)' : '1px solid transparent',
-                      }}
-                      onClick={() => ev && onPlay(ch)}
-                    >
-                      {ev?.title || ''}
+              ))}
+            </div>
+
+            {/* Channel rows */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem', flex: 1, overflowY: 'auto' }}>
+              {channels.slice(0, 12).map((ch, rowIdx) => {
+                const rowKey = `epg-row-${rowIdx}`;
+                const { ref: rowRef, focused: rowFocused } = useFocusable({
+                  focusKey: rowKey,
+                  onEnterPress: () => onPlay(ch),
+                });
+                return (
+                  <div
+                    key={ch.id}
+                    ref={rowRef}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: `160px repeat(${COLS}, 1fr)`,
+                      gap: '0.375rem',
+                      background: rowFocused ? 'rgba(255,106,61,0.08)' : 'transparent',
+                      borderRadius: 6,
+                      padding: '0.25rem 0.5rem',
+                      border: `2px solid ${rowFocused ? 'var(--color-primary)' : 'transparent'}`,
+                      transition: 'background 150ms, border-color 150ms',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: '0.75rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {ch.name}
                     </div>
-                  );
-                })}
-              </div>
-            ))}
+                    {timeSlots.map(slot => {
+                      const ev = epgEvents.find(e =>
+                        e.channelId === ch.id &&
+                        new Date(e.startTime) <= new Date(viewStart.getTime() + (slot + 0.5) * 30 * 60 * 1000) &&
+                        new Date(e.endTime) > new Date(viewStart.getTime() + slot * 30 * 60 * 1000)
+                      );
+                      return (
+                        <div
+                          key={slot}
+                          style={{
+                            height: 40,
+                            background: ev ? 'var(--color-surface-2)' : 'var(--color-surface)',
+                            borderRadius: 4,
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '0 0.375rem',
+                            fontSize: '0.625rem',
+                            overflow: 'hidden',
+                            whiteSpace: 'nowrap',
+                            textOverflow: 'ellipsis',
+                            cursor: 'pointer',
+                            border: ev?.catchup ? '1px solid var(--color-accent)' : '1px solid transparent',
+                          }}
+                          onClick={() => ev && onPlay(ch)}
+                        >
+                          {ev?.title || ''}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </FocusContext.Provider>
   );
 }
 
-// ─── Player ──────────────────────────────────────────────────────────────────
+// ─── PlayerScreen ─────────────────────────────────────────────────────────────
 function PlayerScreen({
   channel,
   onBack,
@@ -598,34 +685,25 @@ function PlayerScreen({
   const [showControls, setShowControls] = useState(true);
   const [playing, setPlaying] = useState(false);
   const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { playStream } = useNativePlayer();
+
+  const playerKey = 'player';
+  const { ref: playerRef } = useFocusable({ focusKey: playerKey, trackChildren: true });
+  const { ref: backBtnRef, focused: backBtnFocused } = useFocusable({ focusKey: 'player-back-btn', onEnterPress: onBack });
 
   useEffect(() => {
     let cancelled = false;
     async function loadAndPlay() {
       try {
-        // Try Marvin channel detail first, fall back to placeholder
         const deviceId2 = localStorage.getItem('tv_device_id2') || '';
         const token = localStorage.getItem('tv_token') || '';
-        const ip = '127.0.0.1';
-
-        let streamUrl = `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`; // fallback test stream
-
-        try {
-          const info = await api.getChannelStream(token, {
-            ip, deviceid: deviceId2, channel: channel.id, type: 'hls',
-          }) as any;
-          if (info?.resultCode === 0 && info.resultObj?.src) {
-            streamUrl = info.resultObj.src;
-          }
-        } catch { /* use fallback */ }
-
+        const streamUrl = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
         if (cancelled) return;
-        await playStream({ src: streamUrl, type: 'application/x-mpegURL' }, undefined, videoRef.current || undefined);
+        if (videoRef.current) {
+          videoRef.current.src = streamUrl;
+          videoRef.current.play().catch(console.error);
+        }
         setPlaying(true);
-      } catch (e) {
-        console.error('Play error:', e);
-      }
+      } catch (e) { console.error('Play error:', e); }
     }
     loadAndPlay();
     return () => { cancelled = true; };
@@ -637,107 +715,77 @@ function PlayerScreen({
     controlsTimer.current = setTimeout(() => setShowControls(false), 4000);
   }
 
-  useTVRemote({
-    onBack() { onBack(); },
-    onPlayPause() {
-      if (videoRef.current?.paused) {
-        videoRef.current.play();
-        setPlaying(true);
-      } else {
-        videoRef.current?.pause();
-        setPlaying(false);
-      }
-      showControlsTemporarily();
-    },
-    onArrowLeft() {
-      if (videoRef.current) videoRef.current.currentTime -= 10;
-      showControlsTemporarily();
-    },
-    onArrowRight() {
-      if (videoRef.current) videoRef.current.currentTime += 10;
-      showControlsTemporarily();
-    },
-    onExit() { onBack(); },
-  });
-
   return (
-    <div
-      className="player-container"
-      onMouseMove={showControlsTemporarily}
-      onClick={showControlsTemporarily}
-    >
-      <video
-        ref={videoRef}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
-        autoPlay
-        onTimeUpdate={() => showControlsTemporarily()}
-      />
+    <FocusContext.Provider value={playerKey}>
+      <div ref={playerRef} className="player-container" onClick={showControlsTemporarily}>
+        <video
+          ref={videoRef}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
+          autoPlay
+          onTimeUpdate={showControlsTemporarily}
+        />
 
-      {showControls && (
-        <div className="player-overlay">
-          {/* Top info */}
-          <div className="player-info" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <button className="btn btn-ghost" onClick={onBack} style={{ padding: '0.25rem 0.5rem', minHeight: 36, fontSize: '0.875rem' }}>
-              ← Back
-            </button>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '1rem' }}>{channel.name}</div>
-              {channel.currentProgram && (
-                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                  {channel.currentProgram.title}
-                </div>
-              )}
+        {showControls && (
+          <div className="player-overlay">
+            {/* Top info */}
+            <div className="player-info" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <button
+                ref={backBtnRef}
+                onClick={onBack}
+                style={{
+                  background: backBtnFocused ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.4)',
+                  border: `1px solid ${backBtnFocused ? 'var(--color-primary)' : 'transparent'}`,
+                  borderRadius: 8,
+                  padding: '0.25rem 0.5rem',
+                  color: '#fff',
+                  fontSize: '0.875rem',
+                  cursor: 'pointer',
+                  transform: backBtnFocused ? 'scale(1.04)' : 'scale(1)',
+                  transition: 'all 150ms',
+                }}
+              >
+                ← Back
+              </button>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '1rem', color: '#fff' }}>{channel.name}</div>
+                {channel.currentProgram && (
+                  <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)' }}>
+                    {channel.currentProgram.title}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Bottom controls */}
+            <div className="player-controls" style={{ justifyContent: 'center' }}>
+              <button
+                onClick={() => { if (videoRef.current) videoRef.current.currentTime -= 30; }}
+                style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8, padding: '0.5rem 0.75rem', color: '#fff', fontSize: '0.875rem', cursor: 'pointer' }}
+              >
+                -30s
+              </button>
+              <button
+                onClick={() => {
+                  if (videoRef.current?.paused) videoRef.current.play();
+                  else videoRef.current?.pause();
+                }}
+                style={{ background: 'var(--color-primary)', border: 'none', borderRadius: 8, padding: '0.5rem 1.5rem', color: '#fff', fontSize: '0.875rem', cursor: 'pointer', fontWeight: 600 }}
+              >
+                {playing ? '⏸ Pause' : '▶ Play'}
+              </button>
+              <button
+                onClick={() => { if (videoRef.current) videoRef.current.currentTime += 30; }}
+                style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8, padding: '0.5rem 0.75rem', color: '#fff', fontSize: '0.875rem', cursor: 'pointer' }}
+              >
+                +30s
+              </button>
             </div>
           </div>
-
-          {/* Bottom controls */}
-          <div className="player-controls" style={{ justifyContent: 'center' }}>
-            <button
-              className="btn btn-surface"
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime -= 30;
-              }}
-              style={{ padding: '0.5rem 0.75rem', minHeight: 44, fontSize: '0.875rem' }}
-            >
-              -30s
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                if (videoRef.current?.paused) videoRef.current.play();
-                else videoRef.current?.pause();
-              }}
-              style={{ padding: '0.5rem 1.5rem', minHeight: 44 }}
-            >
-              {playing ? '⏸ Pause' : '▶ Play'}
-            </button>
-            <button
-              className="btn btn-surface"
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime += 30;
-              }}
-              style={{ padding: '0.5rem 0.75rem', minHeight: 44, fontSize: '0.875rem' }}
-            >
-              +30s
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </FocusContext.Provider>
   );
 }
-
-// ─── Demo Data ───────────────────────────────────────────────────────────────
-const DEMO_CHANNELS: Channel[] = [
-  { id: 'ch1', name: 'BBC One', category: 'News', logo: 'https://upload.wikimedia.org/wikipedia/commons/1/14/BBC_Old_Logo.png' },
-  { id: 'ch2', name: 'CNN', category: 'News', logo: 'https://upload.wikimedia.org/wikipedia/commons/c/c3/CNN_logo_Accepted_2016.png' },
-  { id: 'ch3', name: 'Sky Sports', category: 'Sports', logo: 'https://upload.wikimedia.org/wikipedia/commons/b/b8/Sky_Sports_logo_2017.svg' },
-  { id: 'ch4', name: 'Eurosport', category: 'Sports', logo: 'https://upload.wikimedia.org/wikipedia/commons/3/38/Eurosport_Logo.svg' },
-  { id: 'ch5', name: 'HBO', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/1/17/HBO_logo_2021.svg' },
-  { id: 'ch6', name: 'Netflix', category: 'Entertainment', logo: 'https://upload.wikimedia.org/wikipedia/commons/0/08/Netflix_2015_logo.svg' },
-  { id: 'ch7', name: 'National Geographic', category: 'Documentary', logo: 'https://upload.wikimedia.org/wikipedia/commons/f/fc/Natgeologo.svg' },
-  { id: 'ch8', name: 'Discovery', category: 'Documentary', logo: 'https://upload.wikimedia.org/wikipedia/commons/4/4a/Discovery_Channel_Logo.svg' },
-];
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 export default function TVAppPage() {
@@ -748,8 +796,6 @@ export default function TVAppPage() {
 
   useEffect(() => {
     setDeviceId(generateDeviceId());
-
-    // Check if already activated
     const savedToken = localStorage.getItem('tv_token');
     const savedDeviceId2 = localStorage.getItem('tv_device_id2');
     if (savedToken && savedDeviceId2) {
@@ -763,6 +809,11 @@ export default function TVAppPage() {
     setScreen('home');
   }
 
+  function handlePlay(ch: Channel) {
+    setCurrentChannel(ch);
+    setScreen('player');
+  }
+
   return (
     <div className="app-layout">
       <div className="app-main">
@@ -772,24 +823,21 @@ export default function TVAppPage() {
             onActivated={onActivated}
           />
         )}
-
         {screen === 'home' && (
           <HomeScreen
             token={token}
-            onPlay={(ch) => { setCurrentChannel(ch); setScreen('player'); }}
+            onPlay={handlePlay}
             onOpenEPG={() => setScreen('epg')}
           />
         )}
-
         {screen === 'epg' && (
           <EPGScreen
             channels={DEMO_CHANNELS}
             token={token}
-            onPlay={(ch) => { setCurrentChannel(ch); setScreen('player'); }}
+            onPlay={handlePlay}
             onBack={() => setScreen('home')}
           />
         )}
-
         {screen === 'player' && currentChannel && (
           <PlayerScreen
             channel={currentChannel}
